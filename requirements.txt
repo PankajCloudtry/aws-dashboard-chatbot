@@ -1,0 +1,10 @@
+streamlit
+langchain
+langchain-openai
+langchain-community
+openai
+pypdf
+python-dotenv
+matplotlib
+pandas
+Pillow
