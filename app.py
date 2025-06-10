@@ -26,8 +26,10 @@ with col2:
 tab1, tab2, tab3 = st.tabs([
     "📄 PDF Billing Upload",
     "☁️ Live AWS Resource Data",
-    "⚙️ EC2 DevOps Actions"
+    "⚙️ EC2 DevOps + Migration"
 ])
+
+# ---------------------- Tab 1: PDF BILLING ----------------------
 
 with tab1:
     uploaded_file = st.file_uploader("📎 Upload AWS Billing PDF", type="pdf")
@@ -79,9 +81,10 @@ with tab1:
     else:
         st.info("📄 Please upload a PDF to get started.")
 
+# ---------------------- Tab 2: Live EC2 + S3 ----------------------
+
 with tab2:
     st.subheader("🔍 Fetching Live EC2 Instances and S3 Buckets")
-
     try:
         ec2 = boto3.client("ec2", region_name="ap-south-1")
         s3 = boto3.client("s3", region_name="ap-south-1")
@@ -111,7 +114,6 @@ with tab2:
             st.dataframe(pd.DataFrame(s3_data))
         else:
             st.info("No S3 buckets found.")
-
     except Exception as e:
         st.error(f"❌ Error fetching AWS data: {e}")
     with st.expander("🔄 EC2 Instance Migration"):
@@ -169,9 +171,10 @@ with tab2:
                 st.error(f"❌ Migration failed: {str(e)}")
 
 
+# ---------------------- Tab 3: DevOps + Migration ----------------------
+
 with tab3:
     st.subheader("⚙️ EC2 DevOps Actions")
-
     ec2 = boto3.client("ec2", region_name="ap-south-1")
     ec2_data = ec2.describe_instances()
     instances = []
@@ -227,3 +230,56 @@ with tab3:
             st.success(f"Launched instance {instance_id}")
         except Exception as e:
             st.error(f"Error launching instance: {e}")
+
+    st.markdown("---")
+    st.subheader("📦 EC2 Instance Migration (Snapshot → AMI → Launch)")
+
+    if st.button("📤 Migrate Selected Instance"):
+        try:
+            # Step 1: Get root volume
+            instance_desc = ec2.describe_instances(InstanceIds=[selected_instance])
+            root_device = instance_desc['Reservations'][0]['Instances'][0]['RootDeviceName']
+            volumes = instance_desc['Reservations'][0]['Instances'][0]['BlockDeviceMappings']
+            root_volume_id = next(v['Ebs']['VolumeId'] for v in volumes if v['DeviceName'] == root_device)
+
+            # Step 2: Create snapshot
+            snapshot = ec2.create_snapshot(VolumeId=root_volume_id, Description=f"Snapshot of {selected_instance}")
+            snapshot_id = snapshot['SnapshotId']
+            st.info(f"Creating snapshot {snapshot_id}...")
+
+            waiter = ec2.get_waiter('snapshot_completed')
+            waiter.wait(SnapshotIds=[snapshot_id])
+
+            # Step 3: Register AMI
+            ami_name = f"migrated-ami-{selected_instance}"
+            az = instance_desc['Reservations'][0]['Instances'][0]['Placement']['AvailabilityZone']
+            arch = instance_desc['Reservations'][0]['Instances'][0]['Architecture']
+            ami = ec2.register_image(
+                Name=ami_name,
+                RootDeviceName=root_device,
+                BlockDeviceMappings=[{
+                    'DeviceName': root_device,
+                    'Ebs': {
+                        'SnapshotId': snapshot_id
+                    }
+                }],
+                Architecture=arch,
+                VirtualizationType='hvm'
+            )
+            new_ami_id = ami['ImageId']
+            st.success(f"AMI created: {new_ami_id}")
+
+            # Step 4: Launch from AMI
+            response = ec2.run_instances(
+                ImageId=new_ami_id,
+                InstanceType=instance_desc['Reservations'][0]['Instances'][0]['InstanceType'],
+                MinCount=1,
+                MaxCount=1,
+                Placement={'AvailabilityZone': az},
+                KeyName=key_name
+            )
+            new_instance_id = response['Instances'][0]['InstanceId']
+            st.success(f"🎉 Migrated EC2 launched: {new_instance_id}")
+
+        except Exception as e:
+            st.error(f"❌ Migration failed: {e}")
