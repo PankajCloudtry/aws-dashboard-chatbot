@@ -114,6 +114,60 @@ with tab2:
 
     except Exception as e:
         st.error(f"❌ Error fetching AWS data: {e}")
+    with st.expander("🔄 EC2 Instance Migration"):
+    st.markdown("This will create a snapshot of the selected instance and launch a new instance with the same root volume.")
+
+    instance_ids = [inst["InstanceId"] for inst in instances] if instances else []
+
+    if not instance_ids:
+        st.warning("No running EC2 instances to migrate.")
+    else:
+        selected_instance_id = st.selectbox("Select EC2 instance to migrate", instance_ids)
+
+        if st.button("🚀 Migrate Instance"):
+            try:
+                # Step 1: Get volume ID of root device
+                reservations = ec2.describe_instances(InstanceIds=[selected_instance_id])["Reservations"]
+                root_volume_id = None
+                for res in reservations:
+                    for inst in res["Instances"]:
+                        for mapping in inst["BlockDeviceMappings"]:
+                            if mapping["DeviceName"] == inst["RootDeviceName"]:
+                                root_volume_id = mapping["Ebs"]["VolumeId"]
+
+                if not root_volume_id:
+                    st.error("Could not find root volume for the instance.")
+                else:
+                    # Step 2: Create snapshot
+                    snapshot = ec2.create_snapshot(VolumeId=root_volume_id, Description="Snapshot for migration")
+                    snapshot_id = snapshot["SnapshotId"]
+                    st.info("📸 Snapshot initiated. Waiting to complete...")
+
+                    
+                    waiter = ec2.get_waiter('snapshot_completed')
+                    waiter.wait(SnapshotIds=[snapshot_id])
+
+                    
+                    block_device_mapping = [{
+                        'DeviceName': '/dev/xvda',  # or '/dev/sda1' depending on the AMI
+                        'Ebs': {
+                            'SnapshotId': snapshot_id,
+                            'DeleteOnTermination': True,
+                            'VolumeType': 'gp2'
+                        }
+                    }]
+                    new_instance = ec2.run_instances(
+                        ImageId='ami-0a0ad6b70e61be944',  # A placeholder — you'll need to match the original AMI or use a generic
+                        MinCount=1,
+                        MaxCount=1,
+                        InstanceType='t2.micro',
+                        KeyName='your-keypair-name',  # Replace with your key pair
+                        BlockDeviceMappings=block_device_mapping
+                    )
+                    st.success(f"✅ New instance launched: {new_instance['Instances'][0]['InstanceId']}")
+            except Exception as e:
+                st.error(f"❌ Migration failed: {str(e)}")
+
 
 with tab3:
     st.subheader("⚙️ EC2 DevOps Actions")
